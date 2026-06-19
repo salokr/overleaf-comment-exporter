@@ -15,7 +15,7 @@
 
 <br/>
 
-<!-- 📸 TODO: drop a 15-second screen recording here. This single GIF converts more than the whole README. -->
+<!-- 📸 ToDo: drop a 15-second screen recording here. This single GIF converts more than the whole README. -->
 <!-- Record it, save as docs/demo.gif, then this line shows it: -->
 <!-- ![Demo](docs/demo.gif) -->
 
