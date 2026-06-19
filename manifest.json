@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Overleaf Comment Exporter",
+  "version": "1.0.0",
+  "description": "Export all review comments from an Overleaf project to Markdown, CSV, and JSON — grouped by file. Runs entirely in your browser.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Export Overleaf comments",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": ["scripting", "activeTab"],
+  "host_permissions": [
+    "https://www.overleaf.com/*",
+    "https://*.overleaf.com/*"
+  ]
+}

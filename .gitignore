@@ -1,0 +1,18 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Build / packaging artifacts
+*.zip
+node_modules/
+
+# Local exports (don't commit your own scanned comments)
+overleaf_comments_*.md
+overleaf_comments_*.csv
+overleaf_comments_*.json
+
+# Claude Code local config
+.claude/

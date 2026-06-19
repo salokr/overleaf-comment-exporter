@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="popup.css" />
+  <title>Overleaf Comment Exporter</title>
+</head>
+<body>
+  <header>
+    <img src="icons/icon48.png" width="28" height="28" alt="" />
+    <h1>Overleaf Comment Exporter</h1>
+  </header>
+
+  <p id="status" class="status">Checking the current tab…</p>
+
+  <fieldset id="options" disabled>
+    <legend>What to scan</legend>
+    <label class="radio">
+      <input type="radio" name="scope" value="all" checked />
+      All files in the project
+    </label>
+    <label class="radio">
+      <input type="radio" name="scope" value="current" />
+      Only the file that's open
+    </label>
+
+    <legend class="mt">Formats</legend>
+    <label class="check"><input type="checkbox" id="fmt-md" checked /> Markdown (.md)</label>
+    <label class="check"><input type="checkbox" id="fmt-csv" checked /> Spreadsheet (.csv)</label>
+    <label class="check"><input type="checkbox" id="fmt-json" checked /> Data (.json)</label>
+  </fieldset>
+
+  <button id="run" disabled>Scan &amp; export</button>
+
+  <div id="progress" class="progress" hidden>
+    <div class="phase-row"><span id="phase">Working</span></div>
+
+    <div class="bar-block">
+      <div class="bar-label"><span>Overall</span><span id="overall-pct">0%</span></div>
+      <div class="bar"><div id="overall-fill" class="fill"></div></div>
+      <div class="bar-sub" id="overall-sub"></div>
+    </div>
+
+    <div class="bar-block">
+      <div class="bar-label"><span class="trunc" id="file-name">Current file</span><span id="file-pct">0%</span></div>
+      <div class="bar small"><div id="file-fill" class="fill"></div></div>
+    </div>
+  </div>
+
+  <div id="result" class="result" hidden></div>
+
+  <p class="note">
+    The extension will try to open the Review panel for you. Scanning all files
+    clicks through each one — leave this tab in front while it runs. Everything
+    happens locally in your browser; nothing is uploaded anywhere.
+  </p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
