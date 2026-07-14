@@ -1,15 +1,22 @@
 /* Overleaf Comment Exporter — pure page scanner helpers. */
 
 ;(function exposeScanner(root, factory) {
-  const api = factory()
+  const api = factory(root)
 
   if (typeof module === 'object' && module.exports) {
     module.exports = api
   } else {
     root.__olceScanner = api
   }
-})(typeof globalThis === 'object' ? globalThis : this, function createScanner() {
+})(typeof globalThis === 'object' ? globalThis : this, function createScanner(
+  runtimeRoot
+) {
   'use strict'
+
+  const DOCUMENT_SELECTOR =
+    '.entity[data-file-type="doc"][data-file-id]'
+  const COLLAPSED_FOLDER_SELECTOR =
+    'li[role="treeitem"][aria-expanded="false"]'
 
   function snapshotToCodeMirrorOffset(snapshotOffset, trackedChanges) {
     const deletes = toArray(
@@ -159,6 +166,835 @@
     return []
   }
 
+  async function scanDocuments(options = {}) {
+    const root = options.root || runtimeRoot
+    const documentRoot = root?.document
+    const result = { documents: [], locations: [], issues: [] }
+    const store = root?.overleaf?.unstable?.store
+
+    if (!store || typeof store.get !== 'function') {
+      return unsupportedResult(
+        result,
+        'Overleaf editor store is unavailable.'
+      )
+    }
+
+    const original = readEditorSnapshot(store)
+    if (!original.state) {
+      return unsupportedResult(
+        result,
+        'Overleaf editor view is unavailable.'
+      )
+    }
+    if (original.documentId == null) {
+      return unsupportedResult(
+        result,
+        'Overleaf open document ID is unavailable.'
+      )
+    }
+    if (!documentRoot?.querySelectorAll) {
+      return unsupportedResult(
+        result,
+        'Overleaf document tree is unavailable.'
+      )
+    }
+
+    const timeoutMs = finiteOption(options.timeoutMs, 8000)
+    const pollIntervalMs = finiteOption(options.pollIntervalMs, 50)
+    const folderSettleMs = finiteOption(options.folderSettleMs, 50)
+    const expandedFolders = []
+    let discoveredDocuments = []
+    let primaryError = null
+
+    publishProgress(options.onProgress, {
+      phase: 'discovering',
+      fileIndex: 0,
+      fileTotal: 0,
+      fileName: original.documentName || '',
+    })
+
+    try {
+      const expansion = await expandCollapsedFolders(documentRoot, {
+        root,
+        settleMs: folderSettleMs,
+      })
+      expandedFolders.push(...expansion.folders)
+      result.issues.push(...expansion.issues)
+
+      const discovery = discoverDocuments(documentRoot)
+      discoveredDocuments = discovery.documents
+      result.issues.push(...discovery.issues)
+
+      const selectedDocuments =
+        options.scope === 'all'
+          ? discoveredDocuments
+          : discoveredDocuments.filter(
+              document => document.documentId === original.documentId
+            )
+
+      if (
+        options.scope !== 'all' &&
+        selectedDocuments.length === 0
+      ) {
+        result.issues.push(
+          makeIssue(
+            'CURRENT_DOCUMENT_NOT_FOUND',
+            'The currently open document is not present in the editable document tree.',
+            {
+              documentId: original.documentId,
+              filePath: original.documentName || null,
+            }
+          )
+        )
+      }
+
+      for (let index = 0; index < selectedDocuments.length; index += 1) {
+        const document = selectedDocuments[index]
+        publishProgress(options.onProgress, {
+          phase: 'scanning',
+          fileIndex: index + 1,
+          fileTotal: selectedDocuments.length,
+          fileName: document.filePath,
+          documentId: document.documentId,
+          filePath: document.filePath,
+        })
+
+        const beforeOpen = readEditorSnapshot(store)
+        const openedEvent = observeDocumentOpened(
+          root,
+          store,
+          document.documentId,
+          beforeOpen.documentId !== document.documentId
+        )
+
+        try {
+          clickDocumentTreeitem(document.entity)
+
+          const opened = await waitForExactDocumentId(
+            store,
+            document.documentId,
+            timeoutMs,
+            pollIntervalMs,
+            root
+          )
+          if (!opened) {
+            result.issues.push(
+              makeIssue(
+                'DOCUMENT_OPEN_TIMEOUT',
+                'Timed out waiting for the exact document ID to open.',
+                document
+              )
+            )
+            continue
+          }
+
+          const openedSnapshot = openedEvent.required
+            ? await waitForDocumentOpenedEvent(
+                openedEvent,
+                timeoutMs,
+                pollIntervalMs,
+                root
+              )
+            : beforeOpen
+          if (!openedSnapshot) {
+            result.issues.push(
+              makeIssue(
+                'EDITOR_STATE_TIMEOUT',
+                'Timed out waiting for the editor state to match the document.',
+                document
+              )
+            )
+            continue
+          }
+
+          const editor = await waitForEditorState(
+            store,
+            document,
+            beforeOpen,
+            beforeOpen.documentId === document.documentId,
+            timeoutMs,
+            pollIntervalMs,
+            root
+          )
+          if (!editor) {
+            result.issues.push(
+              makeIssue(
+                'EDITOR_STATE_TIMEOUT',
+                'Timed out waiting for the editor state to match the document.',
+                document
+              )
+            )
+            continue
+          }
+
+          if (!editor.supported) {
+            result.issues.push(
+              makeIssue(
+                'UNSUPPORTED_RANGE_STATE',
+                'Comment range state is unavailable for this document.',
+                document
+              )
+            )
+            continue
+          }
+
+          const content = codeMirrorContent(editor.state)
+          if (content == null) {
+            result.issues.push(
+              makeIssue(
+                'UNSUPPORTED_RANGE_STATE',
+                'Comment range state is unavailable for this document.',
+                document
+              )
+            )
+            continue
+          }
+
+          const locations = normalizeCommentLocations(
+            editor.state,
+            document.documentId,
+            content
+          )
+          result.documents.push(publicDocument(document))
+          result.locations.push(...locations)
+        } finally {
+          openedEvent.cancel()
+        }
+      }
+
+      if (result.documents.length === 0) {
+        result.error = makeIssue(
+          'NO_DOCUMENTS_EXTRACTED',
+          'No document could be extracted.'
+        )
+        result.issues.push(result.error)
+      }
+    } catch (error) {
+      primaryError = error
+    } finally {
+      publishProgress(options.onProgress, {
+        phase: 'restoring',
+        fileIndex: result.documents.length,
+        fileTotal: result.documents.length,
+        fileName: original.documentName || '',
+        documentId: original.documentId,
+      })
+
+      let restorationIssues
+      try {
+        restorationIssues = await restoreEditorState({
+          root,
+          store,
+          documentRoot,
+          original,
+          documents: discoveredDocuments,
+          expandedFolders,
+          timeoutMs,
+          pollIntervalMs,
+          folderSettleMs,
+        })
+      } catch (_) {
+        restorationIssues = [
+          makeIssue(
+            'RESTORE_STATE_FAILED',
+            'Editor restoration failed unexpectedly.'
+          ),
+        ]
+      }
+      result.issues.push(...restorationIssues)
+    }
+
+    if (primaryError) {
+      if (result.issues.length > 0) {
+        primaryError.scanIssues = result.issues.slice()
+      }
+      throw primaryError
+    }
+
+    return result
+  }
+
+  async function expandCollapsedFolders(documentRoot, options) {
+    const folders = []
+    const issues = []
+    const processedIds = new Set()
+    const processedElements = new WeakSet()
+
+    while (true) {
+      const wave = Array.from(
+        documentRoot.querySelectorAll(COLLAPSED_FOLDER_SELECTOR)
+      ).filter(folder => {
+        const folderEntity = folder.querySelector(
+          '.entity[data-file-type="folder"][data-file-id]'
+        )
+        if (
+          !folderEntity ||
+          folderEntity.closest('li[role="treeitem"]') !== folder
+        ) {
+          return false
+        }
+        const folderId = folderIdentity(folder)
+        return folderId
+          ? !processedIds.has(folderId)
+          : !processedElements.has(folder)
+      })
+
+      if (wave.length === 0) {
+        break
+      }
+
+      for (const folder of wave) {
+        const folderId = folderIdentity(folder)
+        if (folderId) processedIds.add(folderId)
+        else processedElements.add(folder)
+
+        const record = {
+          folderId,
+          element: folder,
+          wasExpanded: false,
+        }
+        folders.push(record)
+
+        const toggle = folderToggle(folder)
+        if (!toggle) {
+          issues.push(
+            makeIssue(
+              'FOLDER_EXPANSION_FAILED',
+              'A collapsed folder could not be expanded.'
+            )
+          )
+          continue
+        }
+
+        try {
+          toggle.click()
+        } catch (_) {
+          issues.push(
+            makeIssue(
+              'FOLDER_EXPANSION_FAILED',
+              'A collapsed folder could not be expanded.'
+            )
+          )
+        }
+      }
+
+      await delay(options.settleMs, options.root)
+    }
+
+    return { folders, issues }
+  }
+
+  function discoverDocuments(documentRoot) {
+    const documents = []
+    const issues = []
+    const seenIds = new Set()
+
+    for (const entity of documentRoot.querySelectorAll(
+      DOCUMENT_SELECTOR
+    )) {
+      const documentId = entity.getAttribute('data-file-id')
+      if (!documentId || seenIds.has(documentId)) {
+        continue
+      }
+      seenIds.add(documentId)
+
+      const treeitem = entity.closest('li[role="treeitem"]')
+      const name = cleanAriaLabel(
+        treeitem?.getAttribute('aria-label')
+      )
+      if (!treeitem || !name) {
+        issues.push(
+          makeIssue(
+            'DOCUMENT_PATH_UNAVAILABLE',
+            'An editable document does not expose an accessible name.',
+            { documentId, filePath: null }
+          )
+        )
+        continue
+      }
+
+      const folderNames = semanticFolderAncestors(treeitem)
+        .map(folder =>
+          cleanAriaLabel(folder.getAttribute('aria-label'))
+        )
+        .filter(Boolean)
+
+      documents.push({
+        documentId,
+        filePath: [...folderNames.reverse(), name].join('/'),
+        name,
+        entity,
+        treeitem,
+      })
+    }
+
+    return { documents, issues }
+  }
+
+  async function waitForExactDocumentId(
+    store,
+    documentId,
+    timeoutMs,
+    pollIntervalMs,
+    root
+  ) {
+    const deadline = Date.now() + timeoutMs
+    while (true) {
+      if (safeStoreGet(store, 'editor.open_doc_id') === documentId) {
+        return true
+      }
+      if (Date.now() >= deadline) {
+        return false
+      }
+      await delay(pollIntervalMs, root)
+    }
+  }
+
+  async function waitForEditorState(
+    store,
+    document,
+    baseline,
+    wasAlreadyOpen,
+    timeoutMs,
+    pollIntervalMs,
+    root
+  ) {
+    const deadline = Date.now() + timeoutMs
+    let unsupportedEditor = null
+
+    while (true) {
+      const current = readEditorSnapshot(store)
+      if (
+        current.documentId === document.documentId &&
+        current.documentName === document.name &&
+        current.state?.doc &&
+        typeof current.state.doc.toString === 'function'
+      ) {
+        const fresh =
+          wasAlreadyOpen ||
+          current.view !== baseline.view ||
+          current.state !== baseline.state
+        if (fresh) {
+          const stateDocumentId = commentStateDocumentId(
+            current.state.values
+          )
+          if (hasSupportedRangeState(current.state.values)) {
+            if (
+              stateDocumentId == null ||
+              stateDocumentId === document.documentId
+            ) {
+              return { state: current.state, supported: true }
+            }
+          } else if (stateDocumentId == null) {
+            unsupportedEditor = {
+              state: current.state,
+              supported: false,
+            }
+          }
+        }
+      }
+      if (Date.now() >= deadline) {
+        return unsupportedEditor
+      }
+      await delay(pollIntervalMs, root)
+    }
+  }
+
+  function observeDocumentOpened(
+    root,
+    store,
+    documentId,
+    required
+  ) {
+    let snapshot = null
+    const canListen =
+      required &&
+      typeof root?.addEventListener === 'function' &&
+      typeof root?.removeEventListener === 'function'
+
+    const handler = event => {
+      if (event?.detail?.docId === documentId) {
+        snapshot = readEditorSnapshot(store)
+      }
+    }
+
+    if (canListen) {
+      root.addEventListener('doc:after-opened', handler)
+    }
+
+    return {
+      required: canListen,
+      get snapshot() {
+        return snapshot
+      },
+      cancel() {
+        if (canListen) {
+          root.removeEventListener('doc:after-opened', handler)
+        }
+      },
+    }
+  }
+
+  async function waitForDocumentOpenedEvent(
+    observation,
+    timeoutMs,
+    pollIntervalMs,
+    root
+  ) {
+    const deadline = Date.now() + timeoutMs
+    while (true) {
+      if (observation.snapshot) {
+        return observation.snapshot
+      }
+      if (Date.now() >= deadline) {
+        return null
+      }
+      await delay(pollIntervalMs, root)
+    }
+  }
+
+  async function restoreEditorState(options) {
+    const issues = []
+    let folderSelectionChanged = false
+    const folders = options.expandedFolders.slice().reverse()
+    for (const record of folders) {
+      const folder = resolveFolder(options.documentRoot, record)
+      if (!folder || folder.getAttribute('aria-expanded') !== 'true') {
+        continue
+      }
+
+      const toggle = folderToggle(folder)
+      if (!toggle) {
+        issues.push(
+          makeIssue(
+            'FOLDER_RESTORE_FAILED',
+            'A folder expanded during scanning could not be collapsed.'
+          )
+        )
+        continue
+      }
+
+      try {
+        folderSelectionChanged = true
+        toggle.click()
+        await delay(options.folderSettleMs, options.root)
+        if (folder.getAttribute('aria-expanded') === 'true') {
+          issues.push(
+            makeIssue(
+              'FOLDER_RESTORE_FAILED',
+              'A folder expanded during scanning could not be collapsed.'
+            )
+          )
+        }
+      } catch (_) {
+        issues.push(
+          makeIssue(
+            'FOLDER_RESTORE_FAILED',
+            'A folder expanded during scanning could not be collapsed.'
+          )
+        )
+      }
+    }
+
+    const currentId = safeStoreGet(
+      options.store,
+      'editor.open_doc_id'
+    )
+    if (
+      currentId !== options.original.documentId ||
+      folderSelectionChanged
+    ) {
+      const originalDocument = options.documents.find(
+        document =>
+          document.documentId === options.original.documentId
+      )
+      const issueDocument =
+        originalDocument || {
+          documentId: options.original.documentId,
+          filePath: options.original.documentName || null,
+        }
+      const liveEntity = resolveDocumentEntity(
+        options.documentRoot,
+        options.original.documentId
+      )
+
+      if (!originalDocument || !liveEntity) {
+        issues.push(
+          makeIssue(
+            'RESTORE_DOCUMENT_NOT_FOUND',
+            'The originally open document could not be found for restoration.',
+            issueDocument
+          )
+        )
+      } else {
+        const restoredDocument = {
+          ...originalDocument,
+          entity: liveEntity,
+          treeitem: liveEntity.closest('li[role="treeitem"]'),
+        }
+        const beforeRestore = readEditorSnapshot(options.store)
+        const openedEvent = observeDocumentOpened(
+          options.root,
+          options.store,
+          restoredDocument.documentId,
+          beforeRestore.documentId !== restoredDocument.documentId
+        )
+
+        try {
+          clickDocumentTreeitem(restoredDocument.entity)
+          const idRestored = await waitForExactDocumentId(
+            options.store,
+            restoredDocument.documentId,
+            options.timeoutMs,
+            options.pollIntervalMs,
+            options.root
+          )
+          const openedSnapshot =
+            idRestored && openedEvent.required
+              ? await waitForDocumentOpenedEvent(
+                  openedEvent,
+                  options.timeoutMs,
+                  options.pollIntervalMs,
+                  options.root
+                )
+              : beforeRestore
+          const stateRestored =
+            idRestored && openedSnapshot
+              ? await waitForEditorState(
+                  options.store,
+                  restoredDocument,
+                  beforeRestore,
+                  beforeRestore.documentId ===
+                    restoredDocument.documentId,
+                  options.timeoutMs,
+                  options.pollIntervalMs,
+                  options.root
+                )
+              : null
+
+          if (!idRestored || !stateRestored) {
+            issues.push(
+              makeIssue(
+                'RESTORE_DOCUMENT_TIMEOUT',
+                'Timed out restoring the originally open document.',
+                issueDocument
+              )
+            )
+          }
+        } catch (_) {
+          issues.push(
+            makeIssue(
+              'RESTORE_DOCUMENT_TIMEOUT',
+              'Timed out restoring the originally open document.',
+              issueDocument
+            )
+          )
+        } finally {
+          openedEvent.cancel()
+        }
+      }
+    }
+
+    return issues
+  }
+
+  function readEditorSnapshot(store) {
+    const view = safeStoreGet(store, 'editor.view')
+    return {
+      view,
+      state: view?.state,
+      documentId: safeStoreGet(store, 'editor.open_doc_id'),
+      documentName: safeStoreGet(store, 'editor.open_doc_name'),
+    }
+  }
+
+  function safeStoreGet(store, key) {
+    try {
+      return store.get(key)
+    } catch (_) {
+      return undefined
+    }
+  }
+
+  function hasSupportedRangeState(stateValues) {
+    return Boolean(
+      findLegacyStateValue(stateValues) ||
+        findHistoryStateValue(stateValues)
+    )
+  }
+
+  function commentStateDocumentId(stateValues) {
+    const legacyState = findLegacyStateValue(stateValues)
+    return legacyState?.ranges?.docId ?? null
+  }
+
+  function codeMirrorContent(state) {
+    try {
+      return state?.doc && typeof state.doc.toString === 'function'
+        ? state.doc.toString()
+        : null
+    } catch (_) {
+      return null
+    }
+  }
+
+  function clickDocumentTreeitem(entity) {
+    const buttons = Array.from(entity.querySelectorAll?.('button') || [])
+      .filter(button => button.closest(DOCUMENT_SELECTOR) === entity)
+    const target =
+      buttons.find(button =>
+        button.matches(
+          '.entity-name-button, [data-testid*="entity-name"], [data-testid*="file-name"]'
+        )
+      ) ||
+      buttons.find(button => !button.matches('[aria-haspopup="true"]')) ||
+      entity
+
+    target.scrollIntoView?.({ block: 'center' })
+    target.click()
+  }
+
+  function folderToggle(folder) {
+    const buttons = Array.from(folder.querySelectorAll('button')).filter(
+      button =>
+        button.closest('li[role="treeitem"]') === folder
+    )
+
+    return (
+      buttons.find(button =>
+        /^(expand|collapse)\b/i.test(
+          button.getAttribute('aria-label') || ''
+        )
+      ) ||
+      buttons.find(button =>
+        button.matches(
+          '.file-tree-entity-button, [aria-expanded], [data-testid*="expand"], [data-testid*="collapse"], [class*="expand"], [class*="collapse"], [class*="toggle"], .entity-name-button'
+        )
+      ) ||
+      buttons[0] ||
+      null
+    )
+  }
+
+  function resolveFolder(documentRoot, record) {
+    if (record.folderId) {
+      return (
+        Array.from(
+          documentRoot.querySelectorAll('li[role="treeitem"]')
+        ).find(folder => folderIdentity(folder) === record.folderId) ||
+        null
+      )
+    }
+    return record.element?.isConnected ? record.element : null
+  }
+
+  function resolveDocumentEntity(documentRoot, documentId) {
+    return (
+      Array.from(documentRoot.querySelectorAll(DOCUMENT_SELECTOR)).find(
+        entity =>
+          entity.getAttribute('data-file-id') === documentId
+      ) || null
+    )
+  }
+
+  function folderIdentity(folder) {
+    return (
+      folder.getAttribute('data-folder-id') ||
+      folder.getAttribute('data-file-id') ||
+      folder.getAttribute('data-id') ||
+      folder
+        .querySelector(
+          '.entity[data-file-type="folder"][data-file-id]'
+        )
+        ?.getAttribute('data-file-id') ||
+      null
+    )
+  }
+
+  function semanticFolderAncestors(treeitem) {
+    const folders = []
+    let current = treeitem
+
+    while (current) {
+      const containingTree = current.parentElement?.closest(
+        'ul[role="tree"]'
+      )
+      if (!containingTree) {
+        break
+      }
+
+      let folder = containingTree.previousElementSibling
+      if (
+        !folder?.matches('li[role="treeitem"]') ||
+        !folderIdentity(folder)
+      ) {
+        folder = containingTree.parentElement?.closest(
+          'li[role="treeitem"]'
+        )
+      }
+      if (!folder || !folderIdentity(folder) || folders.includes(folder)) {
+        break
+      }
+
+      folders.push(folder)
+      current = folder
+    }
+
+    return folders
+  }
+
+  function cleanAriaLabel(value) {
+    return typeof value === 'string' ? value.trim() : ''
+  }
+
+  function finiteOption(value, fallback) {
+    return Number.isFinite(value) && value >= 0 ? value : fallback
+  }
+
+  function publicDocument(document) {
+    return {
+      documentId: document.documentId,
+      filePath: document.filePath,
+    }
+  }
+
+  function makeIssue(code, message, document = null) {
+    return {
+      documentId: document?.documentId ?? null,
+      filePath: document?.filePath ?? null,
+      code,
+      message,
+    }
+  }
+
+  function unsupportedResult(result, message) {
+    result.error = makeIssue('UNSUPPORTED_STATE', message)
+    result.issues.push(result.error)
+    return result
+  }
+
+  function publishProgress(callback, update) {
+    if (typeof callback !== 'function') {
+      return
+    }
+    try {
+      callback(update)
+    } catch (_) {
+      // Progress reporting must not interrupt document extraction.
+    }
+  }
+
+  function delay(milliseconds, root) {
+    if (milliseconds === 0) {
+      return Promise.resolve()
+    }
+    const schedule =
+      typeof root?.setTimeout === 'function'
+        ? root.setTimeout.bind(root)
+        : setTimeout
+    return new Promise(resolve => schedule(resolve, milliseconds))
+  }
+
   function addSelection(
     locations,
     threadId,
@@ -287,5 +1123,6 @@
     normalizeLegacyLocations,
     normalizeHistoryLocations,
     normalizeCommentLocations,
+    scanDocuments,
   }
 })

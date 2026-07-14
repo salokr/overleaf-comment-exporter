@@ -319,6 +319,7 @@ test('MAIN-world evaluation exposes the pure API on a temporary global', () => {
       'normalizeCommentLocations',
       'normalizeHistoryLocations',
       'normalizeLegacyLocations',
+      'scanDocuments',
       'snapshotToCodeMirrorOffset',
     ]
   )

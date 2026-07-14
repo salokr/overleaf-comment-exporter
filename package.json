@@ -2,5 +2,8 @@
   "private": true,
   "scripts": {
     "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
   }
 }
