@@ -27,7 +27,7 @@
 
     <legend class="mt">Formats</legend>
     <label class="check"><input type="checkbox" id="fmt-md" checked /> Markdown (.md)</label>
-    <label class="check"><input type="checkbox" id="fmt-csv" checked /> Spreadsheet (.csv)</label>
+    <label class="check"><input type="checkbox" id="fmt-csv" /> Spreadsheet (.csv)</label>
     <label class="check"><input type="checkbox" id="fmt-json" checked /> Data (.json)</label>
   </fieldset>
 
@@ -51,9 +51,8 @@
   <div id="result" class="result" hidden></div>
 
   <p class="note">
-    The extension will try to open the Review panel for you. Scanning all files
-    clicks through each one — leave this tab in front while it runs. Everything
-    happens locally in your browser; nothing is uploaded anywhere.
+    All-files scanning visits each editable document. Keep the Overleaf tab active
+    while it runs. Everything happens locally in your browser; nothing is uploaded.
   </p>
 
   <script src="popup.js"></script>

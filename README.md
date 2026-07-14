@@ -2,7 +2,7 @@
 
 # 📝 Overleaf Comment Exporter
 
-### Export **every** review comment from an Overleaf project to Markdown, CSV & JSON — in one click.
+### Export review threads with their exact source locations to Markdown, JSON, and CSV.
 
 **Overleaf won't let you export your comments. So I built the thing that does.**
 
@@ -37,11 +37,12 @@ So when a paper leaves Overleaf, all that reviewer feedback — the stuff you ne
 
 ## ✨ What it does
 
-- 🗂️ **Scans every file** in your project automatically — or just the one you have open.
+- 🗂️ **Scans every editable file** in your project automatically — or just the one you have open — and retains full project-relative paths such as `chapters/results.tex`.
 - 💬 **Captures the whole thread** — every message, reply, author, and timestamp, including **resolved** comments.
-- ✂️ **Maps each comment to the highlighted text** it's attached to, plus surrounding context.
-- 📊 **Groups by file** with a per-file comment count summary.
-- 📥 **Exports to Markdown, CSV, and JSON** — pick any or all.
+- ✂️ **Links by Overleaf thread ID** to the exact selected source text, 1-based line/column range, and two source lines of context on each side. It does not guess from matching comment text or screen position.
+- ⚠️ **Keeps unlocated threads visible** when a range was detached, deleted, timed out, or could not be read; partial exports include diagnostics instead of silently dropping feedback.
+- 📊 **Groups by full file path** with located/unlocated and open/resolved summaries.
+- 📥 **Exports to Markdown and JSON by default**, with CSV available for spreadsheet compatibility.
 - 🔒 **Runs 100% in your browser.** No servers, no accounts, no uploads, no tracking. [See the privacy note.](PRIVACY.md)
 
 ---
@@ -66,29 +67,51 @@ Works on Chrome, Edge, Brave, and any Chromium browser.
 
 1. Open your **Overleaf project**.
 2. Click the extension icon.
-3. Pick your **scope** (all files / current file) and **formats** (MD / CSV / JSON).
+3. Pick your **scope** (all files / current file) and **formats**. Markdown and JSON are selected by default; CSV is optional.
 4. Hit **Scan & export**.
 
-It opens the Review panel for you and clicks through each file automatically. **Keep the tab in front while it runs** — then your files download. That's it.
+For all-files scope, the extension temporarily expands folders and visits each editable document, then restores the file and folder state. The Review panel does not need to be open. **Keep the Overleaf tab active while scanning runs.**
 
 ---
 
 ## 📦 What you get
 
-**Markdown** — clean, readable, grouped by file with the commented snippet, context, and full thread:
+**Markdown** — readable and LLM-friendly, grouped by full project-relative path with status, exact source location, selected text, numbered context, and the complete discussion:
 
-```markdown
-## introduction.tex  (3)
+````markdown
+## chapters/introduction.tex
 
-### 1.
-**Commented text**
-    We achieve state-of-the-art results on all benchmarks.
-**Comments**
-- **Dr. Reviewer · Jun 12, 2026:** "all"? Be careful — Table 3 shows we're second on GLUE.
+### Thread `thread-42` — open
+
+#### Selection — Lines 18:5–18:61
+
+Selected text:
+```text
+We achieve state-of-the-art results on all benchmarks.
 ```
 
-**CSV** — one row per message, ready for Excel / Sheets / pandas.
-**JSON** — structured, every field, ready to script against.
+Context:
+```text
+16 | We evaluate the proposed method on four public datasets.
+17 |
+18 | We achieve state-of-the-art results on all benchmarks.
+19 | Full results are reported in Table 3.
+20 |
+```
+
+#### Discussion
+
+1. Dr. Reviewer — 2026-06-12T09:30:00.000Z
+```text
+"all"? Be careful — Table 3 shows we're second on GLUE.
+```
+````
+
+**JSON (schema version 2)** — one structured record per thread. Each record includes `filePath`, `documentId`, `status`, `selections[]` with UTF-16 offsets and line/column/context data, stable message IDs, ISO timestamps, authors, and original multiline content. The previous `file`, `fragment`, `context`, and `position` fields remain as first-selection compatibility aliases.
+
+**CSV (optional)** — one row per message. It retains the original columns and appends document, status, line/column, unlocated-reason, and message-ID fields.
+
+Resolved threads are exported with `status: "resolved"`. Threads that cannot be tied to a live source range appear under **Unlocated**, with `filePath: null`, an empty `selections` array, and a diagnostic reason.
 
 ---
 

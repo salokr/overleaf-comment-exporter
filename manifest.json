@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Overleaf Comment Exporter",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Export all review comments from an Overleaf project to Markdown, CSV, and JSON — grouped by file. Runs entirely in your browser.",
   "icons": {
     "16": "icons/icon16.png",
