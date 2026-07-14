@@ -158,6 +158,31 @@ test('normalizeLegacyLocations reads resolved status from a range or thread', ()
   )
 })
 
+test('normalizeLegacyLocations preserves a known detached thread', () => {
+  const locations = normalizeLegacyLocations(
+    [
+      {
+        ranges: {
+          docId: 'legacy-doc',
+          comments: [{ op: { t: 'detached-thread', p: 99, c: 'gone' } }],
+        },
+        threads: {},
+      },
+    ],
+    'legacy-doc',
+    'short'
+  )
+
+  assert.deepEqual(locations, [
+    {
+      threadId: 'detached-thread',
+      documentId: 'legacy-doc',
+      resolved: false,
+      selections: [],
+    },
+  ])
+})
+
 test('snapshotToCodeMirrorOffset maps positions around one tracked deletion', () => {
   const trackedChanges = [trackedDelete(4, 3)]
 
@@ -245,6 +270,34 @@ test('normalizeHistoryLocations preserves resolved status', () => {
   assert.equal(locations[0].resolved, true)
 })
 
+test('normalizeHistoryLocations preserves a known empty attachment', () => {
+  const locations = normalizeHistoryLocations(
+    [
+      {
+        comments: [
+          {
+            id: 'detached-thread',
+            resolved: false,
+            ranges: [],
+          },
+        ],
+        trackedChanges: { asSorted: () => [] },
+      },
+    ],
+    'history-doc',
+    'text'
+  )
+
+  assert.deepEqual(locations, [
+    {
+      threadId: 'detached-thread',
+      documentId: 'history-doc',
+      resolved: false,
+      selections: [],
+    },
+  ])
+})
+
 test('normalizeCommentLocations detects legacy before history state values', () => {
   const content = 'legacy history'
   const state = {
@@ -315,10 +368,17 @@ test('MAIN-world evaluation exposes the pure API on a temporary global', () => {
   assert.deepEqual(
     Object.keys(context.globalThis.__olceScanner).sort(),
     [
+      'buildCsv',
+      'buildExportModel',
+      'buildJson',
+      'buildMarkdown',
       'buildSelection',
+      'detectProject',
       'normalizeCommentLocations',
       'normalizeHistoryLocations',
       'normalizeLegacyLocations',
+      'normalizeThreads',
+      'scan',
       'scanDocuments',
       'snapshotToCodeMirrorOffset',
     ]

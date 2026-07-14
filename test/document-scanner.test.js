@@ -618,7 +618,7 @@ test('restores a nested original before folder collapse when extraction throws',
           'thread-original'
         ),
         'doc-bad': legacyView('doc-bad', 'short', 'thread-bad', {
-          start: 99,
+          throwOnRangeRead: true,
         }),
       },
       mountFolder(folder, group) {
@@ -680,7 +680,7 @@ test('restores the original document and expanded folders after extraction throw
       initialDocumentId: 'doc-original',
       states: {
         'doc-bad': legacyView('doc-bad', 'short', 'thread-bad', {
-          start: 99,
+          throwOnRangeRead: true,
         }),
         'doc-original': legacyView(
           'doc-original',
@@ -1081,6 +1081,19 @@ function findDocumentName(document, documentId) {
 
 function legacyView(documentId, content, threadId, options = {}) {
   const start = options.start || 0
+  const op = options.throwOnRangeRead
+    ? Object.defineProperty({}, 't', {
+        get() {
+          throw new RangeError(
+            'Selection offsets must form a valid range'
+          )
+        },
+      })
+    : {
+        t: threadId,
+        p: start,
+        c: content.slice(0, 1),
+      }
   return {
     state: {
       doc: { toString: () => content },
@@ -1090,11 +1103,7 @@ function legacyView(documentId, content, threadId, options = {}) {
             docId: documentId,
             comments: [
               {
-                op: {
-                  t: threadId,
-                  p: start,
-                  c: content.slice(0, 1),
-                },
+                op,
               },
             ],
           },
