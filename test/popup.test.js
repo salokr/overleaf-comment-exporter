@@ -143,7 +143,7 @@ test('popup defaults and manifest metadata match the export contract', () => {
 
   assert.equal(document.getElementById('fmt-md').checked, true)
   assert.equal(document.getElementById('fmt-json').checked, true)
-  assert.equal(document.getElementById('fmt-csv').checked, false)
+  assert.equal(document.getElementById('fmt-csv').checked, true)
   assert.doesNotMatch(document.body.textContent, /Review panel/i)
   assert.match(document.body.textContent, /tab.*active/i)
   assert.equal(manifest.version, '1.0.1')

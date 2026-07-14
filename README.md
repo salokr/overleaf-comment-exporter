@@ -42,7 +42,7 @@ So when a paper leaves Overleaf, all that reviewer feedback — the stuff you ne
 - ✂️ **Links by Overleaf thread ID** to the exact selected source text, 1-based line/column range, and two source lines of context on each side. It does not guess from matching comment text or screen position.
 - ⚠️ **Keeps unlocated threads visible** when a range was detached, deleted, timed out, or could not be read; partial exports include diagnostics instead of silently dropping feedback.
 - 📊 **Groups by full file path** with located/unlocated and open/resolved summaries.
-- 📥 **Exports to Markdown and JSON by default**, with CSV available for spreadsheet compatibility.
+- 📥 **Exports to Markdown, JSON, and CSV by default**; uncheck any format you do not need.
 - 🔒 **Runs 100% in your browser.** No servers, no accounts, no uploads, no tracking. [See the privacy note.](PRIVACY.md)
 
 ---
@@ -67,7 +67,7 @@ Works on Chrome, Edge, Brave, and any Chromium browser.
 
 1. Open your **Overleaf project**.
 2. Click the extension icon.
-3. Pick your **scope** (all files / current file) and **formats**. Markdown and JSON are selected by default; CSV is optional.
+3. Pick your **scope** (all files / current file) and **formats**. Markdown, JSON, and CSV are all selected by default.
 4. Hit **Scan & export**.
 
 For all-files scope, the extension temporarily expands folders and visits each editable document, then restores the file and folder state. The Review panel does not need to be open. **Keep the Overleaf tab active while scanning runs.**
@@ -109,7 +109,7 @@ Context:
 
 **JSON (schema version 2)** — one structured record per thread. Each record includes `filePath`, `documentId`, `status`, `selections[]` with UTF-16 offsets and line/column/context data, stable message IDs, ISO timestamps, authors, and original multiline content. The previous `file`, `fragment`, `context`, and `position` fields remain as first-selection compatibility aliases.
 
-**CSV (optional)** — one row per message. It retains the original columns and appends document, status, line/column, unlocated-reason, and message-ID fields.
+**CSV** — one row per message. It retains the original columns and appends document, status, line/column, unlocated-reason, and message-ID fields.
 
 Resolved threads are exported with `status: "resolved"`. Threads that cannot be tied to a live source range appear under **Unlocated**, with `filePath: null`, an empty `selections` array, and a diagnostic reason.
 

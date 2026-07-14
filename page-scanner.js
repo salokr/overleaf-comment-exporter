@@ -619,7 +619,7 @@
       const requestedFormats = options.formats || {
         md: true,
         json: true,
-        csv: false,
+        csv: true,
       }
       const outputs = []
       if (requestedFormats.md !== false) {

@@ -329,7 +329,7 @@ test('scan hard-fails thread fetch before document scanning or downloading', asy
   assert.equal(dom.window.__olceProgress.done, true)
 })
 
-test('scan defaults to Markdown and JSON, reports counts, progress, and downloads', async t => {
+test('scan defaults to Markdown, JSON, and CSV, reports counts, progress, and downloads', async t => {
   const dom = projectDom()
   t.after(() => dom.window.close())
   const downloads = []
@@ -368,7 +368,7 @@ test('scan defaults to Markdown and JSON, reports counts, progress, and download
   })
 
   assert.equal(result.ok, true)
-  assert.deepEqual(result.formats, ['md', 'json'])
+  assert.deepEqual(result.formats, ['md', 'json', 'csv'])
   assert.equal(result.filesScanned, 1)
   assert.equal(result.totalComments, 2)
   assert.equal(result.located, 1)
@@ -380,9 +380,10 @@ test('scan defaults to Markdown and JSON, reports counts, progress, and download
     { file: 'main.tex', count: 1 },
     { file: '(unlocated)', count: 1 },
   ])
-  assert.equal(downloads.length, 2)
+  assert.equal(downloads.length, 3)
   assert.match(downloads[0].name, /\.md$/)
   assert.match(downloads[1].name, /\.json$/)
+  assert.match(downloads[2].name, /\.csv$/)
   assert.ok(phases.includes('reading'))
   assert.ok(phases.includes('scanning'))
   assert.ok(phases.includes('formatting'))
