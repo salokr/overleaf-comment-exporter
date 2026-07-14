@@ -264,107 +264,76 @@
         })
 
         const beforeOpen = readEditorSnapshot(store)
-        const openedEvent = observeDocumentOpened(
-          root,
+        clickDocumentTreeitem(document.entity)
+
+        const opened = await waitForExactDocumentId(
           store,
           document.documentId,
-          beforeOpen.documentId !== document.documentId
+          timeoutMs,
+          pollIntervalMs,
+          root
         )
-
-        try {
-          clickDocumentTreeitem(document.entity)
-
-          const opened = await waitForExactDocumentId(
-            store,
-            document.documentId,
-            timeoutMs,
-            pollIntervalMs,
-            root
+        if (!opened) {
+          result.issues.push(
+            makeIssue(
+              'DOCUMENT_OPEN_TIMEOUT',
+              'Timed out waiting for the exact document ID to open.',
+              document
+            )
           )
-          if (!opened) {
-            result.issues.push(
-              makeIssue(
-                'DOCUMENT_OPEN_TIMEOUT',
-                'Timed out waiting for the exact document ID to open.',
-                document
-              )
-            )
-            continue
-          }
-
-          const openedSnapshot = openedEvent.required
-            ? await waitForDocumentOpenedEvent(
-                openedEvent,
-                timeoutMs,
-                pollIntervalMs,
-                root
-              )
-            : beforeOpen
-          if (!openedSnapshot) {
-            result.issues.push(
-              makeIssue(
-                'EDITOR_STATE_TIMEOUT',
-                'Timed out waiting for the editor state to match the document.',
-                document
-              )
-            )
-            continue
-          }
-
-          const editor = await waitForEditorState(
-            store,
-            document,
-            beforeOpen,
-            openedSnapshot,
-            beforeOpen.documentId === document.documentId,
-            timeoutMs,
-            pollIntervalMs,
-            root
-          )
-          if (!editor) {
-            result.issues.push(
-              makeIssue(
-                'EDITOR_STATE_TIMEOUT',
-                'Timed out waiting for the editor state to match the document.',
-                document
-              )
-            )
-            continue
-          }
-
-          if (!editor.supported) {
-            result.issues.push(
-              makeIssue(
-                'UNSUPPORTED_RANGE_STATE',
-                'Comment range state is unavailable for this document.',
-                document
-              )
-            )
-            continue
-          }
-
-          const content = codeMirrorContent(editor.state)
-          if (content == null) {
-            result.issues.push(
-              makeIssue(
-                'UNSUPPORTED_RANGE_STATE',
-                'Comment range state is unavailable for this document.',
-                document
-              )
-            )
-            continue
-          }
-
-          const locations = normalizeCommentLocations(
-            editor.state,
-            document.documentId,
-            content
-          )
-          result.documents.push(publicDocument(document))
-          result.locations.push(...locations)
-        } finally {
-          openedEvent.cancel()
+          continue
         }
+
+        const editor = await waitForEditorState(
+          store,
+          document,
+          beforeOpen,
+          beforeOpen.documentId === document.documentId,
+          timeoutMs,
+          pollIntervalMs,
+          root
+        )
+        if (!editor) {
+          result.issues.push(
+            makeIssue(
+              'EDITOR_STATE_TIMEOUT',
+              'Timed out waiting for the editor state to match the document.',
+              document
+            )
+          )
+          continue
+        }
+
+        if (!editor.supported) {
+          result.issues.push(
+            makeIssue(
+              'UNSUPPORTED_RANGE_STATE',
+              'Comment range state is unavailable for this document.',
+              document
+            )
+          )
+          continue
+        }
+
+        const content = codeMirrorContent(editor.state)
+        if (content == null) {
+          result.issues.push(
+            makeIssue(
+              'UNSUPPORTED_RANGE_STATE',
+              'Comment range state is unavailable for this document.',
+              document
+            )
+          )
+          continue
+        }
+
+        const locations = normalizeCommentLocations(
+          editor.state,
+          document.documentId,
+          content
+        )
+        result.documents.push(publicDocument(document))
+        result.locations.push(...locations)
       }
 
       if (result.documents.length === 0) {
@@ -560,7 +529,6 @@
     store,
     document,
     baseline,
-    openedSnapshot,
     wasAlreadyOpen,
     timeoutMs,
     pollIntervalMs,
@@ -582,25 +550,23 @@
           current.view !== baseline.view ||
           current.state !== baseline.state
         if (fresh) {
-          const stateDocumentId = commentStateDocumentId(
+          const stateIdentity = identifyCommentState(
             current.state.values
           )
-          const documentContentFresh = hasFreshDocumentContent(
-            current,
-            baseline,
-            openedSnapshot,
-            wasAlreadyOpen
-          )
-          if (hasSupportedRangeState(current.state.values)) {
-            if (
-              (stateDocumentId == null && documentContentFresh) ||
-              stateDocumentId === document.documentId
-            ) {
-              return { state: current.state, supported: true }
-            }
-          } else if (
-            stateDocumentId == null &&
-            documentContentFresh
+          if (
+            stateIdentity.supported &&
+            stateIdentity.documentId === document.documentId
+          ) {
+            return { state: current.state, supported: true }
+          }
+
+          const unsupportedHistoryState =
+            stateIdentity.model === 'history' &&
+            (stateIdentity.documentId == null ||
+              stateIdentity.documentId === document.documentId)
+          if (
+            unsupportedHistoryState ||
+            stateIdentity.model == null
           ) {
             unsupportedEditor = {
               state: current.state,
@@ -611,79 +577,6 @@
       }
       if (Date.now() >= deadline) {
         return unsupportedEditor
-      }
-      await delay(pollIntervalMs, root)
-    }
-  }
-
-  function observeDocumentOpened(
-    root,
-    store,
-    documentId,
-    required
-  ) {
-    let snapshot = null
-    const canListen =
-      required &&
-      typeof root?.addEventListener === 'function' &&
-      typeof root?.removeEventListener === 'function'
-
-    const handler = event => {
-      if (event?.detail?.docId === documentId) {
-        snapshot = readEditorSnapshot(store)
-      }
-    }
-
-    if (canListen) {
-      root.addEventListener('doc:after-opened', handler)
-    }
-
-    return {
-      required: canListen,
-      get snapshot() {
-        return snapshot
-      },
-      cancel() {
-        if (canListen) {
-          root.removeEventListener('doc:after-opened', handler)
-        }
-      },
-    }
-  }
-
-  function hasFreshDocumentContent(
-    current,
-    baseline,
-    openedSnapshot,
-    wasAlreadyOpen
-  ) {
-    if (wasAlreadyOpen) {
-      return true
-    }
-
-    const currentDocument = current.state?.doc
-    const baselineDocument = baseline.state?.doc
-    const openedDocument = openedSnapshot?.state?.doc
-
-    return (
-      currentDocument !== baselineDocument &&
-      currentDocument !== openedDocument
-    )
-  }
-
-  async function waitForDocumentOpenedEvent(
-    observation,
-    timeoutMs,
-    pollIntervalMs,
-    root
-  ) {
-    const deadline = Date.now() + timeoutMs
-    while (true) {
-      if (observation.snapshot) {
-        return observation.snapshot
-      }
-      if (Date.now() >= deadline) {
-        return null
       }
       await delay(pollIntervalMs, root)
     }
@@ -815,12 +708,6 @@
       treeitem: entity.closest('li[role="treeitem"]'),
     }
     const beforeRestore = readEditorSnapshot(options.store)
-    const openedEvent = observeDocumentOpened(
-      options.root,
-      options.store,
-      restoredDocument.documentId,
-      beforeRestore.documentId !== restoredDocument.documentId
-    )
 
     try {
       clickDocumentTreeitem(restoredDocument.entity)
@@ -831,22 +718,12 @@
         options.pollIntervalMs,
         options.root
       )
-      const openedSnapshot =
-        idRestored && openedEvent.required
-          ? await waitForDocumentOpenedEvent(
-              openedEvent,
-              options.timeoutMs,
-              options.pollIntervalMs,
-              options.root
-            )
-          : beforeRestore
       const stateRestored =
-        idRestored && openedSnapshot
+        idRestored
           ? await waitForEditorState(
               options.store,
               restoredDocument,
               beforeRestore,
-              openedSnapshot,
               beforeRestore.documentId === restoredDocument.documentId,
               options.timeoutMs,
               options.pollIntervalMs,
@@ -857,8 +734,6 @@
       return Boolean(idRestored && stateRestored)
     } catch (_) {
       return false
-    } finally {
-      openedEvent.cancel()
     }
   }
 
@@ -880,16 +755,27 @@
     }
   }
 
-  function hasSupportedRangeState(stateValues) {
-    return Boolean(
-      findLegacyStateValue(stateValues) ||
-        findHistoryStateValue(stateValues)
-    )
-  }
-
-  function commentStateDocumentId(stateValues) {
+  function identifyCommentState(stateValues) {
     const legacyState = findLegacyStateValue(stateValues)
-    return legacyState?.ranges?.docId ?? null
+    if (legacyState) {
+      return {
+        model: 'legacy',
+        supported: true,
+        documentId: legacyState.ranges.docId,
+      }
+    }
+
+    const historyState = findHistoryStateValue(stateValues)
+    const historyDocument = findHistoryDocumentValue(stateValues)
+    if (historyState || historyDocument) {
+      return {
+        model: 'history',
+        supported: Boolean(historyState && historyDocument),
+        documentId: historyDocument?.name ?? null,
+      }
+    }
+
+    return { model: null, supported: false, documentId: null }
   }
 
   function codeMirrorContent(state) {
@@ -1121,6 +1007,19 @@
       value =>
         isIterable(value?.comments) &&
         typeof value?.trackedChanges?.asSorted === 'function'
+    )
+  }
+
+  function findHistoryDocumentValue(stateValues) {
+    return toArray(stateValues).find(
+      value =>
+        value?.otType === 'history-ot' &&
+        typeof value?.name === 'string' &&
+        value.name.length > 0 &&
+        typeof value?.getText === 'function' &&
+        typeof value?.submitOp === 'function' &&
+        typeof value?.snapshot?.getComments === 'function' &&
+        typeof value?.snapshot?.getTrackedChanges === 'function'
     )
   }
 

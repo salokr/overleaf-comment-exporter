@@ -258,8 +258,12 @@ test('accepts a fresh target state that is ready before the exact open event', a
   assert.equal(result.issues.length, 0)
 })
 
-test('rejects stale history state dispatched before the exact open event', async t => {
-  const originalView = historyView('original', 'thread-original')
+test('rejects stale history state after the open event by exact share-doc ID', async t => {
+  const originalView = historyView(
+    'doc-original',
+    'original',
+    'thread-original'
+  )
   const fixture = createFixture(
     `<ul role="tree" class="file-tree">
       ${documentMarkup('doc-target', 'target.tex')}
@@ -269,14 +273,19 @@ test('rejects stale history state dispatched before the exact open event', async
       initialDocumentId: 'doc-original',
       states: {
         'doc-original': originalView,
-        'doc-target': historyView('target', 'thread-target'),
+        'doc-target': historyView(
+          'doc-target',
+          'target',
+          'thread-target'
+        ),
       },
       transitions: {
         'doc-target': {
           idDelayMs: 2,
-          viewDelayMs: 4,
-          eventDelayMs: 8,
+          eventDelayMs: 4,
+          viewDelayMs: 8,
           intermediateView: historyView(
+            'doc-original',
             'original',
             'thread-stale-original'
           ),
@@ -302,6 +311,51 @@ test('rejects stale history state dispatched before the exact open event', async
     result.locations.map(location => location.documentId),
     ['doc-target', 'doc-original']
   )
+  assert.equal(result.issues.length, 0)
+})
+
+test('uses the exact history share-doc marker without an open event', async t => {
+  const fixture = createFixture(
+    `<ul role="tree" class="file-tree">
+      ${documentMarkup('doc-target', 'target.tex')}
+      ${documentMarkup('doc-original', 'original.tex')}
+    </ul>`,
+    {
+      initialDocumentId: 'doc-original',
+      states: {
+        'doc-original': historyView(
+          'doc-original',
+          'original',
+          'thread-original'
+        ),
+        'doc-target': historyView(
+          'doc-target',
+          'target',
+          'thread-target'
+        ),
+      },
+      transitions: {
+        'doc-target': {
+          idDelayMs: 2,
+          viewDelayMs: 4,
+          skipOpenedEvent: true,
+        },
+      },
+    }
+  )
+  t.after(fixture.close)
+
+  const result = await scanDocuments({
+    root: fixture.window,
+    scope: 'all',
+    timeoutMs: 30,
+    pollIntervalMs: 1,
+  })
+
+  assert.deepEqual(result.locations.map(location => location.threadId), [
+    'thread-target',
+    'thread-original',
+  ])
   assert.equal(result.issues.length, 0)
 })
 
@@ -962,7 +1016,9 @@ function createFixture(html, options) {
 
     if (transition.idDelayMs) window.setTimeout(setId, transition.idDelayMs)
     else setId()
-    if (transition.eventDelayMs) {
+    if (transition.skipOpenedEvent) {
+      // Exact state identity is sufficient; the page event is diagnostic only.
+    } else if (transition.eventDelayMs) {
       window.setTimeout(dispatchOpened, transition.eventDelayMs)
     } else {
       dispatchOpened()
@@ -1058,7 +1114,7 @@ function unsupportedView(content) {
   }
 }
 
-function historyView(content, threadId) {
+function historyView(documentId, content, threadId) {
   const doc =
     typeof content === 'string'
       ? { toString: () => content }
@@ -1067,6 +1123,7 @@ function historyView(content, threadId) {
     state: {
       doc,
       values: [
+        historyShareDocMarker(documentId),
         {
           comments: new Map([
             [
@@ -1080,6 +1137,19 @@ function historyView(content, threadId) {
           trackedChanges: { asSorted: () => [] },
         },
       ],
+    },
+  }
+}
+
+function historyShareDocMarker(documentId) {
+  return {
+    otType: 'history-ot',
+    name: documentId,
+    getText() {},
+    submitOp() {},
+    snapshot: {
+      getComments() {},
+      getTrackedChanges() {},
     },
   }
 }
