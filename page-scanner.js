@@ -200,11 +200,15 @@
     }
 
     const timeoutMs = finiteOption(options.timeoutMs, 8000)
-    const pollIntervalMs = finiteOption(options.pollIntervalMs, 50)
+    const pollIntervalMs = Math.max(
+      1,
+      finiteOption(options.pollIntervalMs, 50)
+    )
     const folderSettleMs = finiteOption(options.folderSettleMs, 50)
     const expandedFolders = []
     let discoveredDocuments = []
-    let primaryError = null
+    let didThrow = false
+    let primaryError
 
     publishProgress(options.onProgress, {
       phase: 'discovering',
@@ -311,6 +315,7 @@
             store,
             document,
             beforeOpen,
+            openedSnapshot,
             beforeOpen.documentId === document.documentId,
             timeoutMs,
             pollIntervalMs,
@@ -370,6 +375,7 @@
         result.issues.push(result.error)
       }
     } catch (error) {
+      didThrow = true
       primaryError = error
     } finally {
       publishProgress(options.onProgress, {
@@ -404,9 +410,9 @@
       result.issues.push(...restorationIssues)
     }
 
-    if (primaryError) {
+    if (didThrow) {
       if (result.issues.length > 0) {
-        primaryError.scanIssues = result.issues.slice()
+        attachScanIssues(primaryError, result.issues)
       }
       throw primaryError
     }
@@ -554,6 +560,7 @@
     store,
     document,
     baseline,
+    openedSnapshot,
     wasAlreadyOpen,
     timeoutMs,
     pollIntervalMs,
@@ -578,14 +585,23 @@
           const stateDocumentId = commentStateDocumentId(
             current.state.values
           )
+          const documentContentFresh = hasFreshDocumentContent(
+            current,
+            baseline,
+            openedSnapshot,
+            wasAlreadyOpen
+          )
           if (hasSupportedRangeState(current.state.values)) {
             if (
-              stateDocumentId == null ||
+              (stateDocumentId == null && documentContentFresh) ||
               stateDocumentId === document.documentId
             ) {
               return { state: current.state, supported: true }
             }
-          } else if (stateDocumentId == null) {
+          } else if (
+            stateDocumentId == null &&
+            documentContentFresh
+          ) {
             unsupportedEditor = {
               state: current.state,
               supported: false,
@@ -635,6 +651,26 @@
     }
   }
 
+  function hasFreshDocumentContent(
+    current,
+    baseline,
+    openedSnapshot,
+    wasAlreadyOpen
+  ) {
+    if (wasAlreadyOpen) {
+      return true
+    }
+
+    const currentDocument = current.state?.doc
+    const baselineDocument = baseline.state?.doc
+    const openedDocument = openedSnapshot?.state?.doc
+
+    return (
+      currentDocument !== baselineDocument &&
+      currentDocument !== openedDocument
+    )
+  }
+
   async function waitForDocumentOpenedEvent(
     observation,
     timeoutMs,
@@ -655,6 +691,33 @@
 
   async function restoreEditorState(options) {
     const issues = []
+    const originalDocument = options.documents.find(
+      document => document.documentId === options.original.documentId
+    )
+    const issueDocument =
+      originalDocument || {
+        documentId: options.original.documentId,
+        filePath: options.original.documentName || null,
+      }
+    const mountedOriginal = originalDocument
+      ? resolveDocumentEntity(
+          options.documentRoot,
+          options.original.documentId
+        )
+      : null
+    let foundOriginal = Boolean(mountedOriginal)
+    let documentRestored =
+      safeStoreGet(options.store, 'editor.open_doc_id') ===
+      options.original.documentId
+
+    if (!documentRestored && mountedOriginal) {
+      documentRestored = await reopenDocument(
+        options,
+        originalDocument,
+        mountedOriginal
+      )
+    }
+
     let folderSelectionChanged = false
     const folders = options.expandedFolders.slice().reverse()
     for (const record of folders) {
@@ -696,106 +759,107 @@
       }
     }
 
-    const currentId = safeStoreGet(
-      options.store,
-      'editor.open_doc_id'
-    )
     if (
-      currentId !== options.original.documentId ||
-      folderSelectionChanged
+      safeStoreGet(options.store, 'editor.open_doc_id') !==
+      options.original.documentId
     ) {
-      const originalDocument = options.documents.find(
-        document =>
-          document.documentId === options.original.documentId
-      )
-      const issueDocument =
-        originalDocument || {
-          documentId: options.original.documentId,
-          filePath: options.original.documentName || null,
-        }
-      const liveEntity = resolveDocumentEntity(
-        options.documentRoot,
-        options.original.documentId
-      )
+      documentRestored = false
+    }
 
-      if (!originalDocument || !liveEntity) {
-        issues.push(
-          makeIssue(
-            'RESTORE_DOCUMENT_NOT_FOUND',
-            'The originally open document could not be found for restoration.',
-            issueDocument
-          )
+    const liveOriginal = originalDocument
+      ? resolveDocumentEntity(
+          options.documentRoot,
+          options.original.documentId
         )
-      } else {
-        const restoredDocument = {
-          ...originalDocument,
-          entity: liveEntity,
-          treeitem: liveEntity.closest('li[role="treeitem"]'),
-        }
-        const beforeRestore = readEditorSnapshot(options.store)
-        const openedEvent = observeDocumentOpened(
-          options.root,
-          options.store,
-          restoredDocument.documentId,
-          beforeRestore.documentId !== restoredDocument.documentId
-        )
+      : null
+    foundOriginal = foundOriginal || Boolean(liveOriginal)
 
-        try {
-          clickDocumentTreeitem(restoredDocument.entity)
-          const idRestored = await waitForExactDocumentId(
-            options.store,
-            restoredDocument.documentId,
-            options.timeoutMs,
-            options.pollIntervalMs,
-            options.root
-          )
-          const openedSnapshot =
-            idRestored && openedEvent.required
-              ? await waitForDocumentOpenedEvent(
-                  openedEvent,
-                  options.timeoutMs,
-                  options.pollIntervalMs,
-                  options.root
-                )
-              : beforeRestore
-          const stateRestored =
-            idRestored && openedSnapshot
-              ? await waitForEditorState(
-                  options.store,
-                  restoredDocument,
-                  beforeRestore,
-                  beforeRestore.documentId ===
-                    restoredDocument.documentId,
-                  options.timeoutMs,
-                  options.pollIntervalMs,
-                  options.root
-                )
-              : null
+    if (
+      liveOriginal &&
+      (folderSelectionChanged || !documentRestored)
+    ) {
+      documentRestored = await reopenDocument(
+        options,
+        originalDocument,
+        liveOriginal
+      )
+    }
 
-          if (!idRestored || !stateRestored) {
-            issues.push(
-              makeIssue(
-                'RESTORE_DOCUMENT_TIMEOUT',
-                'Timed out restoring the originally open document.',
-                issueDocument
-              )
-            )
-          }
-        } catch (_) {
-          issues.push(
-            makeIssue(
+    if (
+      safeStoreGet(options.store, 'editor.open_doc_id') !==
+      options.original.documentId ||
+      !documentRestored
+    ) {
+      issues.push(
+        foundOriginal
+          ? makeIssue(
               'RESTORE_DOCUMENT_TIMEOUT',
               'Timed out restoring the originally open document.',
               issueDocument
             )
-          )
-        } finally {
-          openedEvent.cancel()
-        }
-      }
+          : makeIssue(
+              'RESTORE_DOCUMENT_NOT_FOUND',
+              'The originally open document could not be found for restoration.',
+              issueDocument
+            )
+      )
     }
 
     return issues
+  }
+
+  async function reopenDocument(options, document, entity) {
+    const restoredDocument = {
+      ...document,
+      entity,
+      treeitem: entity.closest('li[role="treeitem"]'),
+    }
+    const beforeRestore = readEditorSnapshot(options.store)
+    const openedEvent = observeDocumentOpened(
+      options.root,
+      options.store,
+      restoredDocument.documentId,
+      beforeRestore.documentId !== restoredDocument.documentId
+    )
+
+    try {
+      clickDocumentTreeitem(restoredDocument.entity)
+      const idRestored = await waitForExactDocumentId(
+        options.store,
+        restoredDocument.documentId,
+        options.timeoutMs,
+        options.pollIntervalMs,
+        options.root
+      )
+      const openedSnapshot =
+        idRestored && openedEvent.required
+          ? await waitForDocumentOpenedEvent(
+              openedEvent,
+              options.timeoutMs,
+              options.pollIntervalMs,
+              options.root
+            )
+          : beforeRestore
+      const stateRestored =
+        idRestored && openedSnapshot
+          ? await waitForEditorState(
+              options.store,
+              restoredDocument,
+              beforeRestore,
+              openedSnapshot,
+              beforeRestore.documentId === restoredDocument.documentId,
+              options.timeoutMs,
+              options.pollIntervalMs,
+              options.root
+            )
+          : null
+
+      return Boolean(idRestored && stateRestored)
+    } catch (_) {
+      return false
+    } finally {
+      openedEvent.cancel()
+    }
   }
 
   function readEditorSnapshot(store) {
@@ -981,6 +1045,31 @@
       callback(update)
     } catch (_) {
       // Progress reporting must not interrupt document extraction.
+    }
+  }
+
+  function attachScanIssues(thrownValue, issues) {
+    if (
+      thrownValue == null ||
+      (typeof thrownValue !== 'object' &&
+        typeof thrownValue !== 'function')
+    ) {
+      return
+    }
+
+    try {
+      if (
+        !Object.isExtensible(thrownValue) &&
+        !Object.prototype.hasOwnProperty.call(
+          thrownValue,
+          'scanIssues'
+        )
+      ) {
+        return
+      }
+      thrownValue.scanIssues = issues.slice()
+    } catch (_) {
+      // The original thrown value remains authoritative.
     }
   }
 

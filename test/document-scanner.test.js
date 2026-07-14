@@ -258,6 +258,95 @@ test('accepts a fresh target state that is ready before the exact open event', a
   assert.equal(result.issues.length, 0)
 })
 
+test('rejects stale history state dispatched before the exact open event', async t => {
+  const originalView = historyView('original', 'thread-original')
+  const fixture = createFixture(
+    `<ul role="tree" class="file-tree">
+      ${documentMarkup('doc-target', 'target.tex')}
+      ${documentMarkup('doc-original', 'original.tex')}
+    </ul>`,
+    {
+      initialDocumentId: 'doc-original',
+      states: {
+        'doc-original': originalView,
+        'doc-target': historyView('target', 'thread-target'),
+      },
+      transitions: {
+        'doc-target': {
+          idDelayMs: 2,
+          viewDelayMs: 4,
+          eventDelayMs: 8,
+          intermediateView: historyView(
+            'original',
+            'thread-stale-original'
+          ),
+          rangeReadyDelayMs: 12,
+        },
+      },
+    }
+  )
+  t.after(fixture.close)
+
+  const result = await scanDocuments({
+    root: fixture.window,
+    scope: 'all',
+    timeoutMs: 40,
+    pollIntervalMs: 1,
+  })
+
+  assert.deepEqual(result.locations.map(location => location.threadId), [
+    'thread-target',
+    'thread-original',
+  ])
+  assert.deepEqual(
+    result.locations.map(location => location.documentId),
+    ['doc-target', 'doc-original']
+  )
+  assert.equal(result.issues.length, 0)
+})
+
+test('uses a positive polling interval when configured with zero', async t => {
+  const fixture = createFixture(
+    `<ul role="tree" class="file-tree">
+      ${documentMarkup('doc-target', 'target.tex')}
+      ${documentMarkup('doc-original', 'original.tex')}
+    </ul>`,
+    {
+      initialDocumentId: 'doc-original',
+      states: {
+        'doc-original': legacyView(
+          'doc-original',
+          'original',
+          'thread-original'
+        ),
+        'doc-target': legacyView('doc-target', 'target', 'thread-target'),
+      },
+      transitions: {
+        'doc-target': {
+          idDelayMs: 2,
+          eventDelayMs: 4,
+          viewDelayMs: 6,
+        },
+      },
+    }
+  )
+  t.after(fixture.close)
+
+  const result = await scanDocuments({
+    root: fixture.window,
+    scope: 'all',
+    timeoutMs: 40,
+    pollIntervalMs: 0,
+    folderSettleMs: 0,
+  })
+
+  assert.deepEqual(result.locations.map(location => location.threadId), [
+    'thread-target',
+    'thread-original',
+  ])
+  assert.equal(result.issues.length, 0)
+})
+
 test('continues scanning after an exact-ID timeout', async t => {
   const fixture = createFixture(
     `<ul role="tree" class="file-tree">
@@ -408,6 +497,125 @@ test('returns an explicit error when no selected document can be extracted', asy
   assert.deepEqual(result.issues.at(-1), result.error)
 })
 
+test('restores a nested original before collapsing its scanner-expanded folder', async t => {
+  const fixture = createFixture(
+    `<ul role="tree" class="file-tree">${folderMarkup('src')}</ul>`,
+    {
+      initialDocumentId: 'doc-original',
+      states: {
+        'doc-original': legacyView(
+          'doc-original',
+          'original',
+          'thread-original'
+        ),
+        'doc-last': legacyView('doc-last', 'last', 'thread-last'),
+      },
+      mountFolder(folder, group) {
+        if (folder.querySelector('.entity').dataset.fileId === 'src') {
+          group.innerHTML = `${documentMarkup('doc-original', 'original.tex')}
+            ${documentMarkup('doc-last', 'last.tex')}`
+        }
+      },
+    }
+  )
+  t.after(fixture.close)
+
+  const result = await scanDocuments({
+    root: fixture.window,
+    scope: 'all',
+    timeoutMs: 50,
+    pollIntervalMs: 1,
+    folderSettleMs: 0,
+  })
+
+  assert.deepEqual(result.documents, [
+    { documentId: 'doc-original', filePath: 'src/original.tex' },
+    { documentId: 'doc-last', filePath: 'src/last.tex' },
+  ])
+  assert.deepEqual(result.issues, [])
+  assert.equal(fixture.currentDocumentId(), 'doc-original')
+  assert.deepEqual(fixture.fileClicks, [
+    'doc-original',
+    'doc-last',
+    'doc-original',
+  ])
+  assert.ok(
+    fixture.events.lastIndexOf('file:doc-original') <
+      fixture.events.indexOf('collapse:src')
+  )
+  assert.equal(
+    fixture.document
+      .querySelector('.entity[data-file-id="src"]')
+      .closest('li[role="treeitem"]')
+      .getAttribute('aria-expanded'),
+    'false'
+  )
+})
+
+test('restores a nested original before folder collapse when extraction throws', async t => {
+  const fixture = createFixture(
+    `<ul role="tree" class="file-tree">${folderMarkup('src')}</ul>`,
+    {
+      initialDocumentId: 'doc-original',
+      states: {
+        'doc-original': legacyView(
+          'doc-original',
+          'original',
+          'thread-original'
+        ),
+        'doc-bad': legacyView('doc-bad', 'short', 'thread-bad', {
+          start: 99,
+        }),
+      },
+      mountFolder(folder, group) {
+        if (folder.querySelector('.entity').dataset.fileId === 'src') {
+          group.innerHTML = `${documentMarkup('doc-original', 'original.tex')}
+            ${documentMarkup('doc-bad', 'bad.tex')}`
+        }
+      },
+    }
+  )
+  t.after(fixture.close)
+
+  let caught
+  try {
+    await scanDocuments({
+      root: fixture.window,
+      scope: 'all',
+      timeoutMs: 50,
+      pollIntervalMs: 1,
+      folderSettleMs: 0,
+    })
+  } catch (error) {
+    caught = error
+  }
+
+  assert.match(caught.message, /Selection offsets must form a valid range/)
+  assert.equal(
+    (caught.scanIssues || []).some(
+      issue => issue.code === 'RESTORE_DOCUMENT_NOT_FOUND'
+    ),
+    false
+  )
+  assert.equal(fixture.currentDocumentId(), 'doc-original')
+  assert.deepEqual(fixture.fileClicks, [
+    'doc-original',
+    'doc-bad',
+    'doc-original',
+  ])
+  assert.ok(
+    fixture.events.lastIndexOf('file:doc-original') <
+      fixture.events.indexOf('collapse:src')
+  )
+  assert.equal(
+    fixture.document
+      .querySelector('.entity[data-file-id="src"]')
+      .closest('li[role="treeitem"]')
+      .getAttribute('aria-expanded'),
+    'false'
+  )
+})
+
 test('restores the original document and expanded folders after extraction throws', async t => {
   const fixture = createFixture(
     `<ul role="tree" class="file-tree">
@@ -450,6 +658,7 @@ test('restores the original document and expanded folders after extraction throw
   assert.deepEqual(fixture.fileClicks, [
     'doc-original',
     'doc-bad',
+    'doc-original',
     'doc-original',
   ])
   assert.equal(
@@ -559,6 +768,95 @@ test('does not hide an extraction error when restoration itself throws', async t
 
   assert.equal(caught.message, 'primary extraction failed')
   assert.equal(caught.scanIssues.at(-1).code, 'RESTORE_STATE_FAILED')
+})
+
+test('rethrows a falsy extraction value exactly', async t => {
+  const fixture = createFixture(
+    `<ul role="tree" class="file-tree">
+      ${documentMarkup('doc-original', 'original.tex')}
+      ${documentMarkup('doc-bad', 'bad.tex')}
+    </ul>`,
+    {
+      initialDocumentId: 'doc-original',
+      states: {
+        'doc-original': legacyView(
+          'doc-original',
+          'original',
+          'thread-original'
+        ),
+        'doc-bad': throwingLegacyView('doc-bad', () => {
+          throw null
+        }),
+      },
+    }
+  )
+  t.after(fixture.close)
+
+  let didThrow = false
+  let caught = Symbol('not thrown')
+  try {
+    await scanDocuments({
+      root: fixture.window,
+      scope: 'all',
+      timeoutMs: 30,
+      pollIntervalMs: 1,
+    })
+  } catch (error) {
+    didThrow = true
+    caught = error
+  }
+
+  assert.equal(didThrow, true)
+  assert.equal(caught, null)
+  assert.equal(fixture.currentDocumentId(), 'doc-original')
+})
+
+test('preserves a frozen extraction error when restoration adds issues', async t => {
+  const primaryError = Object.freeze(new Error('frozen primary error'))
+  let breakRestoration = null
+  const fixture = createFixture(
+    `<ul role="tree" class="file-tree">
+      ${documentMarkup('doc-original', 'original.tex')}
+      ${documentMarkup('doc-bad', 'bad.tex')}
+    </ul>`,
+    {
+      initialDocumentId: 'doc-original',
+      states: {
+        'doc-original': legacyView(
+          'doc-original',
+          'original',
+          'thread-original'
+        ),
+        'doc-bad': throwingLegacyView('doc-bad', () =>
+          breakRestoration()
+        ),
+      },
+    }
+  )
+  t.after(fixture.close)
+  const querySelectorAll = fixture.document.querySelectorAll
+  breakRestoration = () => {
+    fixture.document.querySelectorAll = () => {
+      throw new Error('restoration infrastructure failed')
+    }
+    throw primaryError
+  }
+
+  let caught
+  try {
+    await scanDocuments({
+      root: fixture.window,
+      scope: 'all',
+      timeoutMs: 30,
+      pollIntervalMs: 1,
+    })
+  } catch (error) {
+    caught = error
+  } finally {
+    fixture.document.querySelectorAll = querySelectorAll
+  }
+
+  assert.equal(caught, primaryError)
 })
 
 function createFixture(html, options) {
@@ -756,6 +1054,32 @@ function unsupportedView(content) {
     state: {
       doc: { toString: () => content },
       values: [{ unrelated: true }],
+    },
+  }
+}
+
+function historyView(content, threadId) {
+  const doc =
+    typeof content === 'string'
+      ? { toString: () => content }
+      : content
+  return {
+    state: {
+      doc,
+      values: [
+        {
+          comments: new Map([
+            [
+              threadId,
+              {
+                id: threadId,
+                ranges: [{ start: 0, end: 1 }],
+              },
+            ],
+          ]),
+          trackedChanges: { asSorted: () => [] },
+        },
+      ],
     },
   }
 }
